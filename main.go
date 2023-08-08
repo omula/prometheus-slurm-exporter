@@ -33,6 +33,7 @@ func init() {
 	prometheus.MustRegister(NewQueueCollector())          // from queue.go
 	prometheus.MustRegister(NewSchedulerCollector())      // from scheduler.go
 	prometheus.MustRegister(NewFairShareCollector())      // from sshare.go
+	prometheus.MustRegister(NewFairTreeCollector())       // from sshare.go
 	prometheus.MustRegister(NewUsersCollector())          // from users.go
 }
 

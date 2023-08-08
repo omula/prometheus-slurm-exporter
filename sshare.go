@@ -40,8 +40,30 @@ func FairShareData() []byte {
         return out
 }
 
+func FairTreeData() []byte {
+        cmd := exec.Command( "sshare", "-n", "-P", "-o", "account,levelfs" )
+        stdout, err := cmd.StdoutPipe()
+        if err != nil {
+                log.Fatal(err)
+        }
+        if err := cmd.Start(); err != nil {
+                log.Fatal(err)
+        }
+        out, _ := ioutil.ReadAll(stdout)
+        if err := cmd.Wait(); err != nil {
+                log.Fatal(err)
+        }
+        return out
+}
+
 type FairShareMetrics struct {
         fairshare float64
+}
+
+type FairTreeMetrics struct {
+        fairtree float64
+	depth string
+	parent string
 }
 
 func ParseFairShareMetrics() map[string]*FairShareMetrics {
@@ -63,8 +85,48 @@ func ParseFairShareMetrics() map[string]*FairShareMetrics {
         return accounts
 }
 
+func countLeadingSpaces(line string) string {
+	return strconv.Itoa(len(line) - len(strings.TrimLeft(line, " ")))
+}
+
+func ParseFairTreeMetrics() map[string]*FairTreeMetrics {
+        accounts := make(map[string]*FairTreeMetrics)
+        lines := strings.Split(string(FairTreeData()), "\n")
+	previous_depth := 0
+	parents := []string{"root"}
+	for _, line := range lines[1:] {
+		if strings.Contains(line,"|") {
+			account := strings.Trim(strings.Split(line,"|")[0]," ")
+			_,key := accounts[account]
+			if !key {
+				accounts[account] = &FairTreeMetrics{0, "", ""}
+			}
+			fairtree,_ := strconv.ParseFloat(strings.Split(line,"|")[1],64)
+			accounts[account].fairtree = fairtree
+			accounts[account].depth = countLeadingSpaces(line)
+			current_depth, _ := strconv.Atoi(accounts[account].depth)
+			if previous_depth < current_depth {
+				parents = append(parents, account)
+			} else if previous_depth == current_depth {
+				parents = parents[:len(parents)-1]
+				parents = append(parents, account)
+			} else {
+				parents = parents[:len(parents)-1]
+				parents = append(parents, account)
+			}
+			accounts[account].parent = parents[len(parents)-2]
+			previous_depth, _ = strconv.Atoi(accounts[account].depth)
+		}
+        }
+        return accounts
+}
+
 type FairShareCollector struct {
         fairshare *prometheus.Desc
+}
+
+type FairTreeCollector struct {
+        fairtree *prometheus.Desc
 }
 
 func NewFairShareCollector() *FairShareCollector {
@@ -74,13 +136,31 @@ func NewFairShareCollector() *FairShareCollector {
         }
 }
 
+func NewFairTreeCollector() *FairTreeCollector {
+        labels := []string{"account", "account_depth", "account_parent"}
+        return &FairTreeCollector{
+                fairtree: prometheus.NewDesc("slurm_account_fairtree","FairTree for account" , labels,nil),
+        }
+}
+
 func (fsc *FairShareCollector) Describe(ch chan<- *prometheus.Desc) {
         ch <- fsc.fairshare
+}
+
+func (ftc *FairTreeCollector) Describe(ch chan<- *prometheus.Desc) {
+        ch <- ftc.fairtree
 }
 
 func (fsc *FairShareCollector) Collect(ch chan<- prometheus.Metric) {
         fsm := ParseFairShareMetrics()
         for f := range fsm {
                 ch <- prometheus.MustNewConstMetric(fsc.fairshare, prometheus.GaugeValue, fsm[f].fairshare, f)
+        }
+}
+
+func (ftc *FairTreeCollector) Collect(ch chan<- prometheus.Metric) {
+        ftm := ParseFairTreeMetrics()
+        for f := range ftm {
+                ch <- prometheus.MustNewConstMetric(ftc.fairtree, prometheus.GaugeValue, ftm[f].fairtree, f, ftm[f].depth, ftm[f].parent)
         }
 }
