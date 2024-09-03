@@ -2,6 +2,11 @@
 
 Full commit history per tag: https://github.com/vpenso/prometheus-slurm-exporter/commits/{tag number}
 
+* **0.21 **
+  - Updated to AllocTres insted of AllocGres in gpus.go
+  - Added tres exporting in node.go
+  - Added fairtree
+
 * **0.19**
   - Merge PR#50
 
