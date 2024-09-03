@@ -27,23 +27,56 @@ import (
 
 // NodeMetrics stores metrics for each node
 type NodeMetrics struct {
-	memAlloc uint64
-	memTotal uint64
-	cpuAlloc uint64
-	cpuIdle  uint64
-	cpuOther uint64
-	cpuTotal uint64
+	memAlloc   uint64
+	memTotal   uint64
+	cpuAlloc   uint64
+	cpuIdle    uint64
+	cpuOther   uint64
+	cpuTotal   uint64
 	nodeStatus string
+	tres       map[string]*TresMetrics
+}
+
+type TresMetrics struct {
+	tresAlloc uint64
+	tresTotal uint64
 }
 
 func NodeGetMetrics() map[string]*NodeMetrics {
 	return ParseNodeMetrics(NodeData())
 }
 
+func convert(value string) (uint64, error) {
+	multiplier := uint64(1)
+	switch {
+	case strings.HasSuffix(value, "T"):
+		multiplier = 1 << 40 // 1 Terabyte = 2^40 bytes
+		value = strings.TrimSuffix(value, "T")
+	case strings.HasSuffix(value, "G"):
+		log.Printf("Node: %s", value)
+		multiplier = 1 << 30 // 1 Gigabyte = 2^30 bytes
+		value = strings.TrimSuffix(value, "G")
+	case strings.HasSuffix(value, "M"):
+		multiplier = 1 << 20 // 1 Megabyte = 2^20 bytes
+		value = strings.TrimSuffix(value, "M")
+	case strings.HasSuffix(value, "K"):
+		multiplier = 1 << 10 // 1 Kilobyte = 2^10 bytes
+		value = strings.TrimSuffix(value, "K")
+	}
+
+	baseValue, err := strconv.ParseUint(value, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+
+	return baseValue * multiplier, nil
+}
+
 // ParseNodeMetrics takes the output of sinfo with node data
 // It returns a map of metrics per node
 func ParseNodeMetrics(input []byte) map[string]*NodeMetrics {
 	nodes := make(map[string]*NodeMetrics)
+
 	lines := strings.Split(string(input), "\n")
 
 	// Sort and remove all the duplicates from the 'sinfo' output
@@ -55,17 +88,36 @@ func ParseNodeMetrics(input []byte) map[string]*NodeMetrics {
 		nodeName := node[0]
 		nodeStatus := node[4] // mixed, allocated, etc.
 
-		nodes[nodeName] = &NodeMetrics{0, 0, 0, 0, 0, 0, ""}
+		nodes[nodeName] = &NodeMetrics{0, 0, 0, 0, 0, 0, "", make(map[string]*TresMetrics)}
 
 		memAlloc, _ := strconv.ParseUint(node[1], 10, 64)
 		memTotal, _ := strconv.ParseUint(node[2], 10, 64)
-
 
 		cpuInfo := strings.Split(node[3], "/")
 		cpuAlloc, _ := strconv.ParseUint(cpuInfo[0], 10, 64)
 		cpuIdle, _ := strconv.ParseUint(cpuInfo[1], 10, 64)
 		cpuOther, _ := strconv.ParseUint(cpuInfo[2], 10, 64)
 		cpuTotal, _ := strconv.ParseUint(cpuInfo[3], 10, 64)
+
+		if node[5] != "(null)" {
+			availableTRES := strings.Split(node[5], ",")
+			for _, tresStr := range availableTRES {
+				tresInfo := strings.Split(tresStr, ":")
+				tresName := tresInfo[0]
+				tresTotal, _ := convert(tresInfo[len(tresInfo)-1])
+				nodes[nodeName].tres[tresName] = &TresMetrics{tresTotal: tresTotal}
+			}
+
+			usedTRES := strings.Split(node[6], ",")
+			for _, tresStr := range usedTRES {
+				tresInfo := strings.Split(tresStr, ":")
+				tresName := tresInfo[0]
+				if tresMetrics, ok := nodes[nodeName].tres[tresName]; ok {
+					tresAlloc, _ := convert(tresInfo[len(tresInfo)-1])
+					tresMetrics.tresAlloc = tresAlloc
+				}
+			}
+		}
 
 		nodes[nodeName].memAlloc = memAlloc
 		nodes[nodeName].memTotal = memTotal
@@ -82,7 +134,7 @@ func ParseNodeMetrics(input []byte) map[string]*NodeMetrics {
 // NodeData executes the sinfo command to get data for each node
 // It returns the output of the sinfo command
 func NodeData() []byte {
-	cmd := exec.Command("sinfo", "-h", "-N", "-O", "NodeList,AllocMem,Memory,CPUsState,StateLong")
+	cmd := exec.Command("sinfo", "-h", "-N", "-O", "NodeList,AllocMem,Memory,CPUsState,StateLong,Gres,GresUsed")
 	out, err := cmd.Output()
 	if err != nil {
 		log.Fatal(err)
@@ -91,27 +143,41 @@ func NodeData() []byte {
 }
 
 type NodeCollector struct {
-	cpuAlloc *prometheus.Desc
-	cpuIdle  *prometheus.Desc
-	cpuOther *prometheus.Desc
-	cpuTotal *prometheus.Desc
-	memAlloc *prometheus.Desc
-	memTotal *prometheus.Desc
+	cpuAlloc  *prometheus.Desc
+	cpuIdle   *prometheus.Desc
+	cpuOther  *prometheus.Desc
+	cpuTotal  *prometheus.Desc
+	memAlloc  *prometheus.Desc
+	memTotal  *prometheus.Desc
+	tresDescs map[string]*prometheus.Desc // Add this field to store TRES descriptors
 }
 
 // NewNodeCollector creates a Prometheus collector to keep all our stats in
 // It returns a set of collections for consumption
 func NewNodeCollector() *NodeCollector {
-	labels := []string{"node","status"}
+	labels := []string{"node", "status"}
 
 	return &NodeCollector{
-		cpuAlloc: prometheus.NewDesc("slurm_node_cpu_alloc", "Allocated CPUs per node", labels, nil),
-		cpuIdle:  prometheus.NewDesc("slurm_node_cpu_idle", "Idle CPUs per node", labels, nil),
-		cpuOther: prometheus.NewDesc("slurm_node_cpu_other", "Other CPUs per node", labels, nil),
-		cpuTotal: prometheus.NewDesc("slurm_node_cpu_total", "Total CPUs per node", labels, nil),
-		memAlloc: prometheus.NewDesc("slurm_node_mem_alloc", "Allocated memory per node", labels, nil),
-		memTotal: prometheus.NewDesc("slurm_node_mem_total", "Total memory per node", labels, nil),
+		cpuAlloc:  prometheus.NewDesc("slurm_node_cpu_alloc", "Allocated CPUs per node", labels, nil),
+		cpuIdle:   prometheus.NewDesc("slurm_node_cpu_idle", "Idle CPUs per node", labels, nil),
+		cpuOther:  prometheus.NewDesc("slurm_node_cpu_other", "Other CPUs per node", labels, nil),
+		cpuTotal:  prometheus.NewDesc("slurm_node_cpu_total", "Total CPUs per node", labels, nil),
+		memAlloc:  prometheus.NewDesc("slurm_node_mem_alloc", "Allocated memory per node", labels, nil),
+		memTotal:  prometheus.NewDesc("slurm_node_mem_total", "Total memory per node", labels, nil),
+		tresDescs: make(map[string]*prometheus.Desc), // Initialize the map
 	}
+}
+
+func (nc *NodeCollector) createTresDesc(tresName string) *prometheus.Desc {
+	labels := []string{"node", "status", "tres"}
+	desc := prometheus.NewDesc(
+		"slurm_node_tres_"+tresName,
+		"TRES "+tresName+" per node",
+		labels,
+		nil,
+	)
+	nc.tresDescs[tresName] = desc // Store the descriptor in the map
+	return desc
 }
 
 // Send all metric descriptions
@@ -122,16 +188,25 @@ func (nc *NodeCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- nc.cpuTotal
 	ch <- nc.memAlloc
 	ch <- nc.memTotal
+	for _, desc := range nc.tresDescs { // Include TRES descriptors
+		ch <- desc
+	}
 }
 
 func (nc *NodeCollector) Collect(ch chan<- prometheus.Metric) {
 	nodes := NodeGetMetrics()
 	for node := range nodes {
 		ch <- prometheus.MustNewConstMetric(nc.cpuAlloc, prometheus.GaugeValue, float64(nodes[node].cpuAlloc), node, nodes[node].nodeStatus)
-		ch <- prometheus.MustNewConstMetric(nc.cpuIdle,  prometheus.GaugeValue, float64(nodes[node].cpuIdle),  node, nodes[node].nodeStatus)
+		ch <- prometheus.MustNewConstMetric(nc.cpuIdle, prometheus.GaugeValue, float64(nodes[node].cpuIdle), node, nodes[node].nodeStatus)
 		ch <- prometheus.MustNewConstMetric(nc.cpuOther, prometheus.GaugeValue, float64(nodes[node].cpuOther), node, nodes[node].nodeStatus)
 		ch <- prometheus.MustNewConstMetric(nc.cpuTotal, prometheus.GaugeValue, float64(nodes[node].cpuTotal), node, nodes[node].nodeStatus)
 		ch <- prometheus.MustNewConstMetric(nc.memAlloc, prometheus.GaugeValue, float64(nodes[node].memAlloc), node, nodes[node].nodeStatus)
 		ch <- prometheus.MustNewConstMetric(nc.memTotal, prometheus.GaugeValue, float64(nodes[node].memTotal), node, nodes[node].nodeStatus)
+		for tresName, tresMetrics := range nodes[node].tres {
+			tresDesc_alloc := nc.createTresDesc(tresName + "_alloc")
+			ch <- prometheus.MustNewConstMetric(tresDesc_alloc, prometheus.GaugeValue, float64(tresMetrics.tresAlloc), node, nodes[node].nodeStatus, tresName)
+			tresDesc_total := nc.createTresDesc(tresName + "_total")
+			ch <- prometheus.MustNewConstMetric(tresDesc_total, prometheus.GaugeValue, float64(tresMetrics.tresTotal), node, nodes[node].nodeStatus, tresName)
+		}
 	}
 }
