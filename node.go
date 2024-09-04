@@ -53,7 +53,6 @@ func convert(value string) (uint64, error) {
 		multiplier = 1 << 40 // 1 Terabyte = 2^40 bytes
 		value = strings.TrimSuffix(value, "T")
 	case strings.HasSuffix(value, "G"):
-		log.Printf("Node: %s", value)
 		multiplier = 1 << 30 // 1 Gigabyte = 2^30 bytes
 		value = strings.TrimSuffix(value, "G")
 	case strings.HasSuffix(value, "M"):
