@@ -101,6 +101,10 @@ func ParseNodeMetrics(input []byte) map[string]*NodeMetrics {
 		if node[5] != "(null)" {
 			availableTRES := strings.Split(node[5], ",")
 			for _, tresStr := range availableTRES {
+				// new gpu output["gpu", "gh200", "4(S:0-3)"]
+				if idx := strings.IndexByte(tresStr, '('); idx >= 0 {
+					tresStr = tresStr[:idx]              // now "3"
+				}
 				tresInfo := strings.Split(tresStr, ":")
 				tresName := tresInfo[0]
 				tresTotal, _ := convert(tresInfo[len(tresInfo)-1])
